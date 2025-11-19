@@ -14,7 +14,7 @@ CORS(app,supports_credentials=True)
 @app.before_request
 def validate_session_and_role():
     # Skip validation for public endpoints
-    if request.endpoint in ['signup', 'login']:
+    if request.endpoint in ['login']:
         return
 
     session_id = request.cookies.get("session_id")
@@ -44,6 +44,8 @@ def validate_session_and_role():
 @app.route("/signup",methods=["POST"])
 def signup():
     try:
+        if session.get("user_role") != "Admin":
+            return return_error(error="FORBIDDEN", message="Only Admins can add users"), 403
         print(request)
         data = request.get_json()
         print(data)
