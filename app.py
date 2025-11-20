@@ -1,12 +1,22 @@
 from flask_cors import CORS, cross_origin
 import json
-from common_functions import return_success,return_error,is_valid_email
+from common_functions import return_success,return_error,is_valid_email,to_nullable
 from mysql_connector import get_db
 from flask import Flask, render_template_string, request, session, redirect, url_for,send_file, Response,make_response
 # from flask_session import Session
 import bcrypt
 import uuid
-# from flask_bcrypt import Bcrypt
+import pandas as pd
+from flask import request, jsonify
+import os
+from datetime import datetime
+
+
+ALLOWED_EXTENSIONS = {"xlsx"}
+
+def allowed_file(filename):
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
 app = Flask(__name__)
 app.secret_key = "harshit25102000"
 CORS(app,supports_credentials=True)
@@ -201,6 +211,159 @@ def delete_user():
 
     except Exception as e:
         return return_error(message=str(e))
+
+
+@app.route("/upload_excel", methods=["POST"])
+def upload_excel_sheets():
+    try:
+        internal_file = request.files.get("internal")
+        agency_file = request.files.get("agency")
+
+        if not internal_file and not agency_file:
+            return jsonify({"error": "At least one file (internal or agency) is required"}), 400
+
+
+
+        uploaded_by = session.get("email")
+        now = datetime.now()
+        # Save file temporarily
+        os.makedirs("uploads", exist_ok=True)
+        if internal_file:
+            if not allowed_file(internal_file.filename):
+                return jsonify({"error": "Internal sheet must be .xlsx"}), 400
+        internal_path = f"uploads/internal_{internal_file.filename}"
+        internal_file.save(internal_path)
+
+        # Read excel WITHOUT depending on header labels
+        try:
+            df = pd.read_excel(internal_path, header=None)  # Do NOT use headers
+        except Exception as e:
+            return jsonify({"error": f"Failed to read Excel file: {str(e)}"}), 400
+
+        # Remove header row (first line of sheet)
+        df = df.iloc[1:]
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        insert_query = """
+            INSERT INTO internal_data (
+                shift_day,
+                shift_date,
+                shift_start_time,
+                shift_end_time,
+                facility,
+                state,
+                invoice_date,
+                invoice,
+                role,
+                staff_id,
+                first_name,
+                surname,
+                shift_time_slot,
+                total_shift_length,
+                total_charges,
+                gst,
+                total,
+                created_at,
+                uploaded_by
+            ) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,%s)
+        """
+
+
+
+        # Loop rows using index-based values
+        for _, row in df.iterrows():
+            cursor.execute(
+                insert_query,
+                (
+                    to_nullable(row[0], str),  # shift_day
+                    to_nullable(row[1], str),  # shift_date
+                    to_nullable(row[2], str),  # shift_start_time
+                    to_nullable(row[3], str),  # shift_end_time
+                    to_nullable(row[4], str),  # facility
+                    to_nullable(row[5], str),  # state
+                    to_nullable(row[6], str),  # invoice_date
+                    to_nullable(row[7], int),  # invoice
+                    to_nullable(row[8], str),  # role
+                    to_nullable(row[9], str),  # staff_id
+                    to_nullable(row[10], str),  # first_name
+                    to_nullable(row[11], str),  # surname
+                    to_nullable(row[12], str),  # shift_time_slot
+                    to_nullable(row[13], float),  # total_shift_length
+                    to_nullable(row[14], float),  # total_charges
+                    to_nullable(row[15], float),  # gst
+                    to_nullable(row[16], float),  # total
+                    now,
+                    uploaded_by
+                )
+            )
+
+
+        if agency_file:
+            if not allowed_file(agency_file.filename):
+                return jsonify({"error": "Agency sheet must be .xlsx"}), 400
+
+            agency_path = f"uploads/agency_{agency_file.filename}"
+            agency_file.save(agency_path)
+
+            try:
+                df = pd.read_excel(agency_path, header=None)
+            except Exception as e:
+                return jsonify({"error": f"Failed to read agency Excel: {str(e)}"}), 400
+
+            df = df.iloc[1:]  # Skip header
+
+            insert_agency = """
+                            INSERT INTO agency_data (role, id, first_name, surname, start_date, end_date, \
+                                                     facility_name, shift_date, request_type, bill_rate, \
+                                                     billing_period, invoice, register_type, total, \
+                                                     invoiced_units, shift_load_name, created_at, uploaded_by)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) \
+                            """
+
+            for _, row in df.iterrows():
+
+                # Extract name from "Surname, Firstname"
+                full_name = to_nullable(row[2], str)
+
+                if full_name and "," in full_name:
+                    surname, first_name = [x.strip() for x in full_name.split(",", 1)]
+                else:
+                    surname, first_name = None, None
+
+                cursor.execute(insert_agency, (
+                    to_nullable(row[0], str),  # role
+                    to_nullable(row[1], int),  # id
+                    first_name,  # extracted first_name
+                    surname,  # extracted surname
+                    to_nullable(row[3], str),  # start_date
+                    to_nullable(row[4], str),  # end_date
+                    to_nullable(row[5], str),  # facility_name
+                    to_nullable(row[6], str),  # shift_date
+                    to_nullable(row[7], str),  # request_type
+                    to_nullable(row[8], str),  # bill_rate
+                    to_nullable(row[9], str),  # billing_period
+                    to_nullable(row[10], int),  # invoice
+                    to_nullable(row[11], str),  # register_type
+                    to_nullable(row[12], float),  # total
+                    to_nullable(row[13], float),  # invoiced_units
+                    to_nullable(row[14], str),  # shift_load_name
+                    now,
+                    uploaded_by
+                ))
+
+        conn.commit()
+
+        return jsonify({
+            "message": "Sheets uploaded and stored successfully"
+        }), 200
+
+    except Exception as e:
+        return return_error(message=str(e))
+
+
 
 if __name__=="__main__":
 
