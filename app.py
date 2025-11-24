@@ -371,7 +371,7 @@ def reconcile_all_endpoint():
     # except Exception as e:
     #     return return_error(str(e))
 
-@app.route("/reconcile", methods=["POST"])
+@app.route("/reconcile_by_date", methods=["POST"])
 def reconcile_by_dates_endpoint():
     try:
         data = request.json
@@ -390,6 +390,9 @@ def reconcile_by_dates_endpoint():
 
 @app.route("/change_password", methods=["POST"])
 def change_password():
+    # Ensure only Admin can delete users
+    if session.get("user_role") != "Admin":
+        return return_error(error="FORBIDDEN", message="Only Admins can delete users"), 403
     try:
         data = request.get_json()
         email = data.get("email")
@@ -429,6 +432,85 @@ def change_password():
     except Exception as e:
         return return_error(message=str(e))
 
+
+@app.route("/reconcile_by_date_and_facility", methods=["POST"])
+def reconcile_by_dates_and_facility_endpoint():
+    try:
+        data = request.json
+        start_date = data.get("start_date")
+        end_date = data.get("end_date")
+        facility = data.get("facility")
+
+        if not start_date or not end_date or not facility:
+            return jsonify({"error": "start_date, end_date and facility is required"}), 400
+
+        results = reconcile_by_date_and_facility(start_date, end_date,facility)
+        return jsonify({"message": "Reconciliation complete", "results": results}), 200
+
+    except Exception as e:
+        return return_error(str(e))
+
+@app.route("/get_all_users", methods=["GET"])
+def get_all_users():
+    try:
+        # Ensure only Admin can delete users
+        if session.get("user_role") != "Admin":
+            return return_error(error="FORBIDDEN", message="Only Admins can delete users"), 403
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+
+        # Validate session and fetch role
+        cursor.execute(
+            "SELECT first_name,last_name,email from users;"
+        )
+        all_users= cursor.fetchall()
+
+        return return_success(all_users)
+
+    except Exception as e:
+        return return_error(message=str(e))
+
+
+@app.route("/stats", methods=["GET"])
+def get_statistics():
+    try:
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+
+        # 1️⃣ TOTAL VALUE (sum of total column)
+        cursor.execute("SELECT COALESCE(SUM(total), 0) AS total_value FROM internal_data")
+        total_value = cursor.fetchone()["total_value"]
+
+        # 2️⃣ PENDING VALUE (sum of negative outstanding values returned as positive)
+        cursor.execute("""
+            SELECT COALESCE(ABS(SUM(outstanding)), 0) AS pending_value
+            FROM internal_data
+            WHERE outstanding < 0
+        """)
+        pending_value = cursor.fetchone()["pending_value"]
+
+        # 3️⃣ RECONCILED PERCENTAGE
+        # Count matched rows
+        cursor.execute("SELECT COUNT(*) AS matched FROM internal_data WHERE status = 'Matched'")
+        matched = cursor.fetchone()["matched"]
+
+        # Count total rows
+        cursor.execute("SELECT COUNT(*) AS total FROM internal_data")
+        total_rows = cursor.fetchone()["total"]
+
+        reconciled_percentage = 0
+        if total_rows > 0:
+            reconciled_percentage = round((matched / total_rows) * 100, 2)
+
+        return jsonify({
+            "total_value": float(total_value),
+            "pending_value": float(pending_value),
+            "reconciled_percentage": reconciled_percentage
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__=="__main__":
