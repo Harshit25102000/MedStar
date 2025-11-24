@@ -433,6 +433,28 @@ def change_password():
         return return_error(message=str(e))
 
 
+@app.route("/get_all_facilities", methods=["GET"])
+def get_unique_facilities():
+    try:
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+
+        cursor.execute("""
+            SELECT DISTINCT facility
+            FROM internal_data
+            WHERE facility IS NOT NULL AND facility <> ''
+            ORDER BY facility
+        """)
+
+        facilities = [row["facility"] for row in cursor.fetchall()]
+
+        return jsonify({"facilities": facilities}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+
 @app.route("/reconcile_by_date_and_facility", methods=["POST"])
 def reconcile_by_dates_and_facility_endpoint():
     try:
